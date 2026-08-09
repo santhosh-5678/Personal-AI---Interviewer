@@ -1,11 +1,36 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "http://localhost:8000"
+  baseURL: "http://localhost:8000",
+  headers: {
+    "Content-Type": "application/json",
+  },
 });
 
-export const startInterview = (candidateData) => {
-  return api.post("/api/interview", candidateData);
+
+// Start interview
+export const startInterview = async (sessionId, candidate) => {
+  const response = await api.post("/api/interview", {
+    sessionId,
+    candidate,
+  });
+
+  return response.data;
 };
+
+
+// Send candidate answer
+export const sendInterviewMessage = async (
+  sessionId,
+  message
+) => {
+  const response = await api.post("/api/interview", {
+    sessionId,
+    message,
+  });
+
+  return response.data;
+};
+
 
 export default api;
