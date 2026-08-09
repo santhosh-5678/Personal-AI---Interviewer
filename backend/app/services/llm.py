@@ -1,47 +1,43 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
-import torch
+import os
 
-MODEL_NAME = "HuggingFaceTB/SmolLM2-135M-Instruct"
+from dotenv import load_dotenv
+from openai import OpenAI
 
-print("Loading model...")
+load_dotenv()
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-print("Model loaded successfully.")
+if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY is not configured")
+
+client = OpenAI(
+    api_key=GEMINI_API_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+)
+
+MODEL_NAME = "gemini-3.6-flash"
 
 
-def generate_interview_response(messages):
+def generate_interview_response(conversation):
+    try:
+        print("Calling Gemini...")
+        print("Model:", MODEL_NAME)
+        print("Number of messages:", len(conversation))
 
-    prompt = ""
-
-    for message in messages:
-        role = message["role"]
-        content = message["content"]
-
-        prompt += f"{role}: {content}\n"
-
-    prompt += "assistant:"
-
-    inputs = tokenizer(
-        prompt,
-        return_tensors="pt"
-    )
-
-    with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=200,
-            temperature=0.7,
-            do_sample=True,
-            pad_token_id=tokenizer.eos_token_id,
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=conversation,
+            max_tokens=500,
         )
 
-    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+        print("Gemini response received")
 
-    response = tokenizer.decode(
-        generated_tokens,
-        skip_special_tokens=True
-    )
+        return response.choices[0].message.content
 
-    return response.strip()
+    except Exception as e:
+        print("====================================")
+        print("GEMINI LLM ERROR:")
+        print(repr(e))
+        print("====================================")
+
+        return "LLM_ERROR"

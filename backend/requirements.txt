@@ -1,5 +1,5 @@
-fastapi>=0.110,<1.0
-uvicorn>=0.27,<1.0
-pydantic>=2.0,<3.0
-transformers>=4.40,<6.0
-torch>=2.2,<3.0
+fastapi
+uvicorn
+pydantic
+openai
+python-dotenv
