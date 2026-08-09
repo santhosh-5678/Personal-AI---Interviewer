@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import "./App.css";
-
-const API_BASE_URL = "http://127.0.0.1:8000";
+import {
+  sendInterviewMessage,
+  startInterview,
+} from "./services/api";
 
 /* =========================================================
    CANDIDATE DATA HELPERS
@@ -153,28 +156,6 @@ function extractReply(data) {
 }
 
 /* =========================================================
-   INITIAL INTERVIEW MESSAGE
-========================================================= */
-
-function createInitialMessage(candidate) {
-  const name = getCandidateName(candidate);
-  const role = getCandidateRole(candidate);
-  const experience = getCandidateExperience(candidate);
-
-  return {
-    id: `initial-${Date.now()}`,
-    role: "assistant",
-    content: `Hello ${name}, welcome to your technical interview.
-
-I'll be conducting this interview based on the information provided for your profile.
-
-I can see that you're interviewing for the ${role} role with ${experience} of experience.
-
-To begin, could you briefly walk me through your current or most recent role and the kind of work you've been doing?`,
-  };
-}
-
-/* =========================================================
    APP
 ========================================================= */
 
@@ -290,18 +271,41 @@ function App() {
     }
 
     const newSessionId = createSessionId();
+    const candidateId = selectedCandidate.member.id;
 
     setSessionId(newSessionId);
-
-    setMessages([
-      createInitialMessage(selectedCandidate),
-    ]);
-
+    setMessages([]);
     setInput("");
-
     setError("");
-
     setInterviewStarted(false);
+    setIsLoading(true);
+
+    const beginInterview = async () => {
+      try {
+        const data = await startInterview(
+          newSessionId,
+          candidateId
+        );
+
+        setMessages([
+          {
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            content: extractReply(data),
+          },
+        ]);
+      } catch (requestError) {
+        console.error("Interview API error:", requestError);
+        setError(
+          requestError.message ||
+            "Unable to connect to the interview server."
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    beginInterview();
   }, [selectedCandidate]);
 
   /* =======================================================
@@ -353,24 +357,6 @@ function App() {
     };
 
     /* -------------------------------------------------------
-       Build conversation history
-
-       This includes:
-       - Initial AI message
-       - Previous user answers
-       - Previous AI questions
-       - Current user answer
-    ------------------------------------------------------- */
-
-    const conversation = [
-      ...messages,
-      userMessage,
-    ].map((message) => ({
-      role: message.role,
-      content: message.content,
-    }));
-
-    /* -------------------------------------------------------
        Update UI immediately
     ------------------------------------------------------- */
 
@@ -392,57 +378,11 @@ function App() {
     ------------------------------------------------------- */
 
     try {
-      const response = await fetch(
-        `${API_BASE_URL}/api/interview`,
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-          },
-
-          body: JSON.stringify({
-            sessionId,
-
-            /*
-             * VERY IMPORTANT
-             *
-             * Send the complete candidate object.
-             *
-             * The backend can use all information
-             * from candidates.json to generate
-             * personalized questions.
-             */
-            candidate: selectedCandidate,
-
-            /*
-             * Current candidate answer
-             */
-            message: trimmedMessage,
-
-            /*
-             * Complete interview history
-             */
-            conversation,
-          }),
-        }
+      const data = await sendInterviewMessage(
+        sessionId,
+        selectedCandidate.member.id,
+        trimmedMessage
       );
-
-      let data = {};
-
-      try {
-        data = await response.json();
-      } catch {
-        data = {};
-      }
-
-      if (!response.ok) {
-        throw new Error(
-          data?.detail ||
-            data?.message ||
-            "The interview request failed."
-        );
-      }
 
       /* -----------------------------------------------------
          Extract AI response
@@ -889,7 +829,13 @@ function App() {
                           : "user-bubble"
                       }`}
                     >
-                      {message.content}
+                      {isAssistant ? (
+                        <ReactMarkdown>
+                          {message.content}
+                        </ReactMarkdown>
+                      ) : (
+                        message.content
+                      )}
                     </div>
 
                   </div>

@@ -1,47 +1,47 @@
-import os
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
-from dotenv import load_dotenv
-from openai import OpenAI
+MODEL_NAME = "HuggingFaceTB/SmolLM2-135M-Instruct"
 
-load_dotenv()
+print("Loading model...")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
 
-if not GEMINI_API_KEY:
-    raise ValueError(
-        "GEMINI_API_KEY is not configured in .env"
+print("Model loaded successfully.")
+
+
+def generate_interview_response(messages):
+
+    prompt = ""
+
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+
+        prompt += f"{role}: {content}\n"
+
+    prompt += "assistant:"
+
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt"
     )
 
-client = OpenAI(
-    api_key=GEMINI_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-)
-
-MODEL_NAME = "gemini-2.5-flash"
-
-
-def generate_interview_response(conversation):
-
-    try:
-        print("Calling Gemini...")
-        print("Model:", MODEL_NAME)
-        print("Number of messages:", len(conversation))
-
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=conversation,
-            temperature=0.3,
-            max_tokens=500,
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=200,
+            temperature=0.7,
+            do_sample=True,
+            pad_token_id=tokenizer.eos_token_id,
         )
 
-        print("Gemini response received")
+    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
 
-        return response.choices[0].message.content
+    response = tokenizer.decode(
+        generated_tokens,
+        skip_special_tokens=True
+    )
 
-    except Exception as e:
-        print("====================================")
-        print("GEMINI LLM ERROR:")
-        print(repr(e))
-        print("====================================")
-
-        return "LLM_ERROR"
+    return response.strip()

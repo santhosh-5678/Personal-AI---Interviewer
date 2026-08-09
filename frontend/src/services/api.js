@@ -7,30 +7,30 @@ const api = axios.create({
   },
 });
 
-
 // Start interview
-export const startInterview = async (sessionId, candidate) => {
+export const startInterview = async (sessionId, candidateId) => {
   const response = await api.post("/api/interview", {
     sessionId,
-    candidate,
+    candidateId,
+    message: "",
   });
 
   return response.data;
 };
 
-
 // Send candidate answer
 export const sendInterviewMessage = async (
   sessionId,
+  candidateId,
   message
 ) => {
   const response = await api.post("/api/interview", {
     sessionId,
+    candidateId,
     message,
   });
 
   return response.data;
 };
-
 
 export default api;
