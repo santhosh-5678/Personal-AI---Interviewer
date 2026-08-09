@@ -1,27 +1,65 @@
 from app.schemas.session import InterviewSession
+from app.database.database import (
+    save_session_data,
+    get_session_data,
+    delete_session_data,
+)
 
 
-# Temporary in-memory session storage
-sessions = {}
-
+# =========================================================
+# CREATE SESSION
+# =========================================================
 
 def create_session(session_id: str) -> InterviewSession:
+
     session = InterviewSession(
         sessionId=session_id
     )
 
-    sessions[session_id] = session
+    save_session_data(
+        session_id,
+        session.model_dump()
+    )
 
     return session
 
 
-def get_session(session_id: str) -> InterviewSession | None:
-    return sessions.get(session_id)
+# =========================================================
+# GET SESSION
+# =========================================================
+
+def get_session(
+    session_id: str
+) -> InterviewSession | None:
+
+    data = get_session_data(session_id)
+
+    if data is None:
+        return None
+
+    return InterviewSession.model_validate(data)
 
 
-def save_session(session: InterviewSession) -> None:
-    sessions[session.sessionId] = session
+# =========================================================
+# SAVE SESSION
+# =========================================================
+
+def save_session(
+    session: InterviewSession
+) -> None:
+
+    save_session_data(
+        session.sessionId,
+        session.model_dump()
+    )
 
 
-def delete_session(session_id: str) -> None:
-    sessions.pop(session_id, None)
+# =========================================================
+# DELETE SESSION
+# =========================================================
+
+def delete_session(
+    session_id: str
+) -> None:
+
+    delete_session_data(session_id)

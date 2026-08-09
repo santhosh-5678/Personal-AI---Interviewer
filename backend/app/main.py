@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.interview import router as interview_router
-from app.api.resume import router as resume_router
+from app.api.result import router as result_router
+from app.database.database import init_database
 
 app = FastAPI()
+init_database()
 
 app.add_middleware(
     CORSMiddleware,
@@ -14,7 +16,7 @@ app.add_middleware(
 )
 
 app.include_router(interview_router, prefix="/api")
-app.include_router(resume_router, prefix="/api")
+app.include_router(result_router, prefix="/api")
 
 @app.get("/")
 def root():

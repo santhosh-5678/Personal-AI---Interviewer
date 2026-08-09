@@ -1,999 +1,1019 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-import {
-  startInterview,
-  sendInterviewMessage,
-} from "./services/api";
+const API_BASE_URL = "http://127.0.0.1:8000";
 
+/* =========================================================
+   CANDIDATE DATA HELPERS
+========================================================= */
+
+function normalizeCandidates(data) {
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  if (Array.isArray(data?.candidates)) {
+    return data.candidates;
+  }
+
+  if (Array.isArray(data?.data)) {
+    return data.data;
+  }
+
+  return [];
+}
+
+function getCandidateMember(candidate) {
+  return candidate?.member || candidate || {};
+}
+
+function getCandidateName(candidate) {
+  const member = getCandidateMember(candidate);
+
+  return (
+    member.name ||
+    member.fullName ||
+    member.full_name ||
+    candidate?.name ||
+    candidate?.fullName ||
+    candidate?.full_name ||
+    "Interview Candidate"
+  );
+}
+
+function getCandidateRole(candidate) {
+  const member = getCandidateMember(candidate);
+
+  return (
+    member.jobRole ||
+    member.job_role ||
+    member.role ||
+    candidate?.jobRole ||
+    candidate?.job_role ||
+    candidate?.role ||
+    "Technical Interview"
+  );
+}
+
+function getCandidateExperience(candidate) {
+  const member = getCandidateMember(candidate);
+
+  const experience =
+    member.yearsExperience ??
+    member.years_experience ??
+    member.experience ??
+    member.experienceYears ??
+    candidate?.yearsExperience ??
+    candidate?.years_experience ??
+    candidate?.experience ??
+    candidate?.experienceYears;
+
+  if (
+    experience === undefined ||
+    experience === null ||
+    experience === ""
+  ) {
+    return "Not specified";
+  }
+
+  if (typeof experience === "number") {
+    return `${experience} years`;
+  }
+
+  return String(experience);
+}
+
+function getCandidateEducation(candidate) {
+  const member = getCandidateMember(candidate);
+
+  return (
+    member.education ||
+    member.highestQualification ||
+    member.highest_qualification ||
+    member.degree ||
+    candidate?.education ||
+    candidate?.highestQualification ||
+    candidate?.highest_qualification ||
+    candidate?.degree ||
+    "Not specified"
+  );
+}
+
+function getCandidateInitial(candidate) {
+  const name = getCandidateName(candidate);
+
+  return name.charAt(0).toUpperCase();
+}
+
+function getCandidateId(candidate) {
+  const member = getCandidateMember(candidate);
+
+  return (
+    candidate?.id ||
+    candidate?.candidateId ||
+    candidate?.candidate_id ||
+    member?.id ||
+    member?.candidateId ||
+    member?.candidate_id ||
+    null
+  );
+}
+
+/* =========================================================
+   SESSION HELPERS
+========================================================= */
+
+function createSessionId() {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2)}`;
+}
+
+/* =========================================================
+   API RESPONSE HELPER
+========================================================= */
+
+function extractReply(data) {
+  return (
+    data?.reply ||
+    data?.message ||
+    data?.ai_reply ||
+    data?.aiReply ||
+    data?.response ||
+    data?.content ||
+    "I couldn't generate a response. Please try again."
+  );
+}
+
+/* =========================================================
+   INITIAL INTERVIEW MESSAGE
+========================================================= */
+
+function createInitialMessage(candidate) {
+  const name = getCandidateName(candidate);
+  const role = getCandidateRole(candidate);
+  const experience = getCandidateExperience(candidate);
+
+  return {
+    id: `initial-${Date.now()}`,
+    role: "assistant",
+    content: `Hello ${name}, welcome to your technical interview.
+
+I'll be conducting this interview based on the information provided for your profile.
+
+I can see that you're interviewing for the ${role} role with ${experience} of experience.
+
+To begin, could you briefly walk me through your current or most recent role and the kind of work you've been doing?`,
+  };
+}
+
+/* =========================================================
+   APP
+========================================================= */
 
 function App() {
-  // =========================================
-  // STATE
-  // =========================================
+  /* =======================================================
+     CANDIDATE STATE
+  ======================================================= */
 
-  const [resumeFile, setResumeFile] = useState(null);
-  const [showResumeUpload, setShowResumeUpload] = useState(false);
+  const [candidates, setCandidates] = useState([]);
 
-  const [theme, setTheme] = useState("light");
+  const [selectedCandidate, setSelectedCandidate] =
+    useState(null);
 
-  const [candidate, setCandidate] = useState(null);
+  const [isLoadingCandidates, setIsLoadingCandidates] =
+    useState(true);
+
+  /* =======================================================
+     INTERVIEW STATE
+  ======================================================= */
+
+  const [sessionId, setSessionId] = useState(
+    createSessionId()
+  );
 
   const [messages, setMessages] = useState([]);
 
-  const [message, setMessage] = useState("");
+  const [input, setInput] = useState("");
 
-  const [sessionId, setSessionId] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const [loading, setLoading] = useState(true);
+  const [interviewStarted, setInterviewStarted] =
+    useState(false);
 
-  const [sending, setSending] = useState(false);
+  /* =======================================================
+     ERROR STATE
+  ======================================================= */
 
   const [error, setError] = useState("");
 
-  // =========================================
-  // HELPER
-  // =========================================
+  /* =======================================================
+     REFS
+  ======================================================= */
 
-  const checkForResumeStage = (reply) => {
-    if (!reply) {
-      return;
-    }
+  const messagesEndRef = useRef(null);
 
-    const text = reply.toLowerCase();
-
-    const resumeKeywords = [
-      "upload your resume",
-      "upload your cv",
-      "upload a resume",
-      "upload a cv",
-      "please upload your resume",
-      "please upload your cv",
-      "resume",
-      "cv",
-    ];
-
-    const shouldShowUpload = resumeKeywords.some(
-      (keyword) => text.includes(keyword)
-    );
-
-    if (shouldShowUpload) {
-      setShowResumeUpload(true);
-    }
-  };
-
-
-  // =========================================
-  // LOAD CANDIDATE + START INTERVIEW
-  // =========================================
+  /* =======================================================
+     LOAD CANDIDATES
+     
+     File location:
+     
+     frontend/
+       public/
+         data/
+           candidates.json
+  ======================================================= */
 
   useEffect(() => {
-    const initializeInterview = async () => {
+    const loadCandidates = async () => {
       try {
-        setLoading(true);
+        setIsLoadingCandidates(true);
         setError("");
 
-        // -------------------------------------
-        // 1. Load candidates.json
-        // -------------------------------------
-
-        const candidateResponse = await fetch(
+        const response = await fetch(
           "/data/candidates.json"
         );
 
-        if (!candidateResponse.ok) {
+        if (!response.ok) {
           throw new Error(
-            "Unable to load candidates.json"
+            `Unable to load candidates.json (${response.status})`
           );
         }
 
-        const candidateData =
-          await candidateResponse.json();
+        const data = await response.json();
 
+        const loadedCandidates =
+          normalizeCandidates(data);
 
-        // -------------------------------------
-        // 2. Select candidate
-        // -------------------------------------
-
-        const selectedCandidate =
-          candidateData.candidates?.[0];
-
-
-        if (!selectedCandidate) {
+        if (loadedCandidates.length === 0) {
           throw new Error(
-            "No candidate found in candidates.json"
+            "No candidates found in candidates.json."
           );
         }
 
+        setCandidates(loadedCandidates);
 
-        // -------------------------------------
-        // 3. Store candidate
-        // -------------------------------------
-
-        setCandidate(selectedCandidate);
-
-
-        // -------------------------------------
-        // 4. Create session ID
-        // -------------------------------------
-
-        const newSessionId =
-          crypto.randomUUID();
-
-        setSessionId(newSessionId);
-
-
-        // -------------------------------------
-        // 5. Start interview
-        // -------------------------------------
-
-        const response =
-          await startInterview(
-            newSessionId,
-            selectedCandidate
-          );
-
-
-        console.log(
-          "Interview started:",
-          response
-        );
-
-
-        // -------------------------------------
-        // 6. Check resume stage
-        // -------------------------------------
-
-        checkForResumeStage(
-          response.reply
-        );
-
-
-        // -------------------------------------
-        // 7. Add AI message
-        // -------------------------------------
-
-        if (response.reply) {
-          setMessages([
-            {
-              id: Date.now(),
-              sender: "ai",
-              text: response.reply,
-            },
-          ]);
-        }
-
-      } catch (error) {
-
+        // Automatically select first candidate
+        setSelectedCandidate(loadedCandidates[0]);
+      } catch (loadError) {
         console.error(
-          "Interview initialization failed:",
-          error.response?.data ||
-          error.message ||
-          error
+          "Candidate data error:",
+          loadError
         );
 
         setError(
-          "Unable to start the interview."
+          loadError.message ||
+            "Unable to load candidate data."
         );
-
       } finally {
-
-        setLoading(false);
-
+        setIsLoadingCandidates(false);
       }
     };
 
-
-    initializeInterview();
-
+    loadCandidates();
   }, []);
 
+  /* =======================================================
+     RESET INTERVIEW WHEN CANDIDATE CHANGES
+  ======================================================= */
 
-  // =========================================
-  // HANDLE SEND MESSAGE
-  // =========================================
-
-  const handleSend = async () => {
-
-    // Do not send empty messages
-    if (!message.trim()) {
+  useEffect(() => {
+    if (!selectedCandidate) {
       return;
     }
 
+    const newSessionId = createSessionId();
 
-    // Session must exist
-    if (!sessionId) {
-      console.error(
-        "Session ID is not available."
-      );
+    setSessionId(newSessionId);
 
-      return;
-    }
+    setMessages([
+      createInitialMessage(selectedCandidate),
+    ]);
 
-
-    // Prevent multiple requests
-    if (sending) {
-      return;
-    }
-
-
-    const userMessage =
-      message.trim();
-
-
-    // -------------------------------------
-    // Show user message immediately
-    // -------------------------------------
-
-    setMessages(
-      (previousMessages) => [
-        ...previousMessages,
-
-        {
-          id: Date.now(),
-          sender: "user",
-          text: userMessage,
-        },
-      ]
-    );
-
-
-    // Clear input
-    setMessage("");
-
-
-    try {
-
-      setSending(true);
-      setError("");
-
-
-      // -------------------------------------
-      // Send message to backend
-      // -------------------------------------
-
-      const response =
-        await sendInterviewMessage(
-          sessionId,
-          userMessage
-        );
-
-
-      console.log(
-        "Interview response:",
-        response
-      );
-
-
-      // -------------------------------------
-      // Check if AI reached resume stage
-      // -------------------------------------
-
-      checkForResumeStage(
-        response.reply
-      );
-
-
-      // -------------------------------------
-      // Add AI response
-      // -------------------------------------
-
-      if (response.reply) {
-
-        setMessages(
-          (previousMessages) => [
-            ...previousMessages,
-
-            {
-              id: Date.now() + 1,
-              sender: "ai",
-              text: response.reply,
-            },
-          ]
-        );
-
-      }
-
-    } catch (error) {
-
-      console.error(
-        "Interview message failed:",
-        error.response?.data ||
-        error.message ||
-        error
-      );
-
-      setError(
-        "Unable to get a response from the interview agent."
-      );
-
-    } finally {
-
-      setSending(false);
-
-    }
-  };
-
-
-  // =========================================
-  // HANDLE RESUME SELECTION
-  // =========================================
-
-  const handleResumeChange = (event) => {
-
-    const file =
-      event.target.files?.[0];
-
-
-    if (!file) {
-      return;
-    }
-
-
-    // Only PDF
-    if (
-      file.type !==
-      "application/pdf"
-    ) {
-
-      setError(
-        "Please upload a PDF resume."
-      );
-
-      setResumeFile(null);
-
-      return;
-    }
-
-
-    // Optional size check
-    const maxSize =
-      10 * 1024 * 1024;
-
-
-    if (file.size > maxSize) {
-
-      setError(
-        "Resume must be smaller than 10 MB."
-      );
-
-      setResumeFile(null);
-
-      return;
-    }
-
-
-    setResumeFile(file);
+    setInput("");
 
     setError("");
 
-    console.log(
-      "Resume selected:",
-      file.name
-    );
+    setInterviewStarted(false);
+  }, [selectedCandidate]);
+
+  /* =======================================================
+     SCROLL TO LATEST MESSAGE
+  ======================================================= */
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({
+      behavior: "smooth",
+    });
+  }, [messages, isLoading]);
+
+  /* =======================================================
+     SELECT CANDIDATE
+  ======================================================= */
+
+  const handleCandidateSelect = (candidate) => {
+    if (isLoading) {
+      return;
+    }
+
+    setSelectedCandidate(candidate);
   };
 
+  /* =======================================================
+     SEND MESSAGE TO BACKEND
+  ======================================================= */
 
-  // =========================================
-  // LOADING SCREEN
-  // =========================================
+  const sendMessage = async () => {
+    const trimmedMessage = input.trim();
 
-  if (loading) {
+    if (!trimmedMessage || isLoading) {
+      return;
+    }
 
+    if (!selectedCandidate) {
+      setError("No candidate is selected.");
+      return;
+    }
+
+    /* -------------------------------------------------------
+       Create user's message
+    ------------------------------------------------------- */
+
+    const userMessage = {
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: trimmedMessage,
+    };
+
+    /* -------------------------------------------------------
+       Build conversation history
+
+       This includes:
+       - Initial AI message
+       - Previous user answers
+       - Previous AI questions
+       - Current user answer
+    ------------------------------------------------------- */
+
+    const conversation = [
+      ...messages,
+      userMessage,
+    ].map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+
+    /* -------------------------------------------------------
+       Update UI immediately
+    ------------------------------------------------------- */
+
+    setMessages((previousMessages) => [
+      ...previousMessages,
+      userMessage,
+    ]);
+
+    setInput("");
+
+    setError("");
+
+    setInterviewStarted(true);
+
+    setIsLoading(true);
+
+    /* -------------------------------------------------------
+       Send request to FastAPI
+    ------------------------------------------------------- */
+
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/interview`,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type": "application/json",
+          },
+
+          body: JSON.stringify({
+            sessionId,
+
+            /*
+             * VERY IMPORTANT
+             *
+             * Send the complete candidate object.
+             *
+             * The backend can use all information
+             * from candidates.json to generate
+             * personalized questions.
+             */
+            candidate: selectedCandidate,
+
+            /*
+             * Current candidate answer
+             */
+            message: trimmedMessage,
+
+            /*
+             * Complete interview history
+             */
+            conversation,
+          }),
+        }
+      );
+
+      let data = {};
+
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+            data?.message ||
+            "The interview request failed."
+        );
+      }
+
+      /* -----------------------------------------------------
+         Extract AI response
+      ----------------------------------------------------- */
+
+      const aiReply = extractReply(data);
+
+      const assistantMessage = {
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content: aiReply,
+      };
+
+      setMessages((previousMessages) => [
+        ...previousMessages,
+        assistantMessage,
+      ]);
+    } catch (requestError) {
+      console.error(
+        "Interview API error:",
+        requestError
+      );
+
+      setError(
+        requestError.message ||
+          "Unable to connect to the interview server."
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  /* =======================================================
+     ENTER KEY
+  ======================================================= */
+
+  const handleKeyDown = (event) => {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey
+    ) {
+      event.preventDefault();
+
+      sendMessage();
+    }
+  };
+
+  /* =======================================================
+     CANDIDATE DISPLAY DATA
+     
+     Everything here comes from candidates.json.
+  ======================================================= */
+
+  const candidateName = selectedCandidate
+    ? getCandidateName(selectedCandidate)
+    : "Interview Candidate";
+
+  const candidateInitial = selectedCandidate
+    ? getCandidateInitial(selectedCandidate)
+    : "C";
+
+  const candidateRole = selectedCandidate
+    ? getCandidateRole(selectedCandidate)
+    : "Technical Interview";
+
+  const candidateExperience = selectedCandidate
+    ? getCandidateExperience(selectedCandidate)
+    : "Not specified";
+
+  const candidateEducation = selectedCandidate
+    ? getCandidateEducation(selectedCandidate)
+    : "Not specified";
+
+  const candidateId = selectedCandidate
+    ? getCandidateId(selectedCandidate)
+    : null;
+
+  /* =======================================================
+     LOADING STATE
+  ======================================================= */
+
+  if (isLoadingCandidates) {
     return (
-      <div
-        className={`interview-app ${theme}`}
-      >
+      <div className="app">
 
-        <div className="loading-screen">
+        <aside className="candidate-sidebar">
 
-          <div className="loading-spinner" />
+          <div className="candidate-profile">
 
-          <p>
-            Starting your interview...
-          </p>
-
-        </div>
-
-      </div>
-    );
-  }
-
-
-  // =========================================
-  // MAIN UI
-  // =========================================
-
-  return (
-    <div
-      className={`interview-app ${theme}`}
-    >
-
-      {/* =====================================
-          HEADER
-      ====================================== */}
-
-      <header className="topbar">
-
-        {/* Candidate mini profile */}
-
-        <div className="candidate-mini">
-
-          <div className="candidate-avatar">
-
-            {candidate?.member?.name
-              ?.charAt(0)
-              ?.toUpperCase() || "C"}
-
-          </div>
-
-
-          <div>
-
-            <div className="candidate-name">
-
-              {candidate?.member?.name ||
-                "Candidate"}
-
+            <div className="candidate-avatar large">
+              ...
             </div>
 
+            <h1>Loading Candidate</h1>
 
-            <div className="candidate-status">
-
-              Technical Interview
-
+            <div className="candidate-badge">
+              Loading...
             </div>
-
-          </div>
-
-        </div>
-
-
-        {/* Title */}
-
-        <h1 className="app-title">
-
-          AI Interview Agent
-
-        </h1>
-
-
-        {/* Theme */}
-
-        <div className="topbar-actions">
-
-          <button
-            className="theme-toggle"
-            onClick={() =>
-              setTheme(
-                theme === "light"
-                  ? "dark"
-                  : "light"
-              )
-            }
-            aria-label="Toggle theme"
-            title="Toggle theme"
-          >
-
-            {theme === "light"
-              ? "☀"
-              : "☾"}
-
-          </button>
-
-        </div>
-
-      </header>
-
-
-      {/* =====================================
-          MAIN LAYOUT
-      ====================================== */}
-
-      <div className="main-layout">
-
-
-        {/* ===================================
-            SIDEBAR
-        ==================================== */}
-
-        <aside className="sidebar">
-
-          {/* Profile */}
-
-          <div className="profile-section">
-
-            <div className="large-avatar">
-
-              {candidate?.member?.name
-                ?.charAt(0)
-                ?.toUpperCase() || "C"}
-
-            </div>
-
-
-            <h2>
-
-              {candidate?.member?.name ||
-                "Candidate"}
-
-            </h2>
-
-
-            <span className="candidate-badge">
-
-              Interview Candidate
-
-            </span>
-
-          </div>
-
-
-          {/* Candidate Information */}
-
-          <div className="candidate-info">
-
-
-            {/* Role */}
-
-            <div className="info-item">
-
-              <span className="info-label">
-
-                Role
-
-              </span>
-
-
-              <strong>
-
-                {candidate?.member?.jobRole ||
-                  "Not available"}
-
-              </strong>
-
-            </div>
-
-
-            {/* Experience */}
-
-            <div className="info-item">
-
-              <span className="info-label">
-
-                Experience
-
-              </span>
-
-
-              <strong>
-
-                {candidate?.member
-                  ?.yearsExperience ??
-                  "Not available"}
-
-                {candidate?.member
-                  ?.yearsExperience !==
-                  undefined &&
-                  " years"}
-
-              </strong>
-
-            </div>
-
-
-            {/* Education */}
-
-            <div className="info-item">
-
-              <span className="info-label">
-
-                Education
-
-              </span>
-
-
-              <strong>
-
-                {candidate?.member
-                  ?.education ||
-                  "Not available"}
-
-              </strong>
-
-            </div>
-
-
-            {/* Status */}
-
-            <div className="info-item">
-
-              <span className="info-label">
-
-                Status
-
-              </span>
-
-
-              <span className="status-active">
-
-                ● In Progress
-
-              </span>
-
-            </div>
-
-          </div>
-
-
-          {/* =================================
-              PROGRESS
-          ================================== */}
-
-          <div className="progress-section">
-
-            <div className="progress-header">
-
-              <span>
-
-                Interview Progress
-
-              </span>
-
-
-              <strong>
-
-                0 / 8
-
-              </strong>
-
-            </div>
-
-
-            <div className="progress-bar">
-
-              <div
-                className="progress-fill"
-                style={{
-                  width: "0%",
-                }}
-              />
-
-            </div>
-
-
-            <p>
-
-              Exactly 8 questions
-
-            </p>
 
           </div>
 
         </aside>
 
+        <main className="interview-area">
 
-        {/* ===================================
-            CHAT SECTION
-        ==================================== */}
+          <div className="messages-container">
 
-        <section className="chat-section">
+            <div className="messages-list">
 
+              <div className="message-row assistant-row">
 
-          {/* Chat Header */}
+                <div className="message-avatar ai-message-avatar">
+                  AI
+                </div>
 
-          <div className="chat-header">
+                <div className="message-content assistant-content">
 
-            <div className="agent-avatar">
+                  <div className="message-sender">
+                    Interview Agent
+                  </div>
 
-              AI
+                  <div className="message-bubble assistant-bubble">
+                    Loading candidate information...
+                  </div>
+
+                </div>
+
+              </div>
 
             </div>
 
+          </div>
+
+        </main>
+
+      </div>
+    );
+  }
+
+  /* =======================================================
+     MAIN UI
+  ======================================================= */
+
+  return (
+    <div className="app">
+
+      {/* =================================================
+          LEFT SIDEBAR
+      ================================================= */}
+
+      <aside className="candidate-sidebar">
+
+        {/* Candidate Header */}
+
+        <div className="candidate-header">
+
+          <div className="candidate-avatar small">
+            {candidateInitial}
+          </div>
+
+          <div className="candidate-header-info">
+
+            <h2>
+              {candidateName}
+            </h2>
+
+            <p>
+              {candidateRole}
+            </p>
+
+          </div>
+
+        </div>
+
+        {/* =================================================
+            CANDIDATE LIST
+        ================================================= */}
+
+        {candidates.length > 1 && (
+          <div className="candidate-selector">
+
+            <div className="candidate-selector-title">
+              CANDIDATES
+            </div>
+
+            <div className="candidate-list">
+
+              {candidates.map((candidate, index) => {
+
+                const itemId =
+                  getCandidateId(candidate) ||
+                  `candidate-${index}`;
+
+                const isSelected =
+                  selectedCandidate === candidate;
+
+                return (
+                  <button
+                    key={itemId}
+                    type="button"
+                    className={`candidate-list-item ${
+                      isSelected ? "selected" : ""
+                    }`}
+                    onClick={() =>
+                      handleCandidateSelect(candidate)
+                    }
+                    disabled={isLoading}
+                  >
+
+                    <div className="candidate-avatar small">
+                      {getCandidateInitial(candidate)}
+                    </div>
+
+                    <div className="candidate-list-info">
+
+                      <strong>
+                        {getCandidateName(candidate)}
+                      </strong>
+
+                      <span>
+                        {getCandidateRole(candidate)}
+                      </span>
+
+                    </div>
+
+                  </button>
+                );
+              })}
+
+            </div>
+
+          </div>
+        )}
+
+        {/* =================================================
+            CANDIDATE PROFILE
+        ================================================= */}
+
+        <div className="candidate-profile">
+
+          <div className="candidate-avatar large">
+            {candidateInitial}
+          </div>
+
+          <h1>
+            {candidateName}
+          </h1>
+
+          <div className="candidate-badge">
+            {candidateRole}
+          </div>
+
+        </div>
+
+        {/* =================================================
+            CANDIDATE INFORMATION
+        ================================================= */}
+
+        <div className="candidate-info">
+
+          {/* Candidate ID */}
+
+          {candidateId && (
+            <div className="info-item">
+
+              <span className="info-label">
+                CANDIDATE ID
+              </span>
+
+              <span className="info-value">
+                {candidateId}
+              </span>
+
+            </div>
+          )}
+
+          {/* Role */}
+
+          <div className="info-item">
+
+            <span className="info-label">
+              ROLE
+            </span>
+
+            <span className="info-value">
+              {candidateRole}
+            </span>
+
+          </div>
+
+          {/* Experience */}
+
+          <div className="info-item">
+
+            <span className="info-label">
+              EXPERIENCE
+            </span>
+
+            <span className="info-value">
+              {candidateExperience}
+            </span>
+
+          </div>
+
+          {/* Education */}
+
+          <div className="info-item">
+
+            <span className="info-label">
+              EDUCATION
+            </span>
+
+            <span className="info-value">
+              {candidateEducation}
+            </span>
+
+          </div>
+
+          {/* Interview Status */}
+
+          <div className="info-item">
+
+            <span className="info-label">
+              STATUS
+            </span>
+
+            <span
+              className={`info-status ${
+                interviewStarted
+                  ? "in-progress"
+                  : "not-started"
+              }`}
+            >
+
+              <span className="status-dot"></span>
+
+              {interviewStarted
+                ? "In Progress"
+                : "Not Started"}
+
+            </span>
+
+          </div>
+
+        </div>
+
+      </aside>
+
+      {/* =================================================
+          MAIN INTERVIEW AREA
+      ================================================= */}
+
+      <main className="interview-area">
+
+        {/* =================================================
+            TOP BAR
+        ================================================= */}
+
+        <header className="interview-header">
+
+          <div className="interview-header-left">
+
+            <div className="header-ai-avatar">
+              AI
+            </div>
 
             <div>
 
               <h2>
-
                 Interview Agent
-
               </h2>
 
-
-              <span>
-
+              <p>
                 AI Technical Interview
-
-              </span>
-
-            </div>
-
-
-            <div className="online-indicator">
-
-              <span />
-
-              Online
+              </p>
 
             </div>
 
           </div>
 
+          <div className="online-status">
 
-          {/* =================================
-              CHAT MESSAGES
-          ================================== */}
+            <span className="online-dot"></span>
 
-          <div className="chat-messages">
+            <span>
+              Online
+            </span>
 
-            <div className="messages-container">
+          </div>
 
-              {messages.map((msg) => (
+        </header>
 
+        {/* =================================================
+            MESSAGES
+        ================================================= */}
+
+        <section className="messages-container">
+
+          <div className="messages-list">
+
+            {messages.map((message) => {
+
+              const isAssistant =
+                message.role === "assistant";
+
+              return (
                 <div
-                  key={msg.id}
-                  className={`chat-message ${msg.sender}`}
+                  key={message.id}
+                  className={`message-row ${
+                    isAssistant
+                      ? "assistant-row"
+                      : "user-row"
+                  }`}
                 >
 
+                  {/* AI Avatar */}
 
-                  {/* AI avatar */}
-
-                  {msg.sender === "ai" && (
-
-                    <div className="message-avatar">
-
+                  {isAssistant && (
+                    <div className="message-avatar ai-message-avatar">
                       AI
-
                     </div>
-
                   )}
 
+                  {/* Message Content */}
 
-                  {/* Message content */}
+                  <div
+                    className={`message-content ${
+                      isAssistant
+                        ? "assistant-content"
+                        : "user-content"
+                    }`}
+                  >
 
-                  <div className="message-content">
-
-                    {msg.sender === "ai" && (
-
-                      <div className="message-name">
-
+                    {isAssistant && (
+                      <div className="message-sender">
                         Interview Agent
-
                       </div>
-
                     )}
 
-
-                    <div className="message-bubble">
-
-                      {msg.text}
-
+                    <div
+                      className={`message-bubble ${
+                        isAssistant
+                          ? "assistant-bubble"
+                          : "user-bubble"
+                      }`}
+                    >
+                      {message.content}
                     </div>
 
                   </div>
 
+                  {/* User Avatar */}
 
-                  {/* User avatar */}
-
-                  {msg.sender === "user" && (
-
-                    <div className="message-avatar user-avatar">
-
+                  {!isAssistant && (
+                    <div className="message-avatar user-message-avatar">
                       You
-
                     </div>
-
                   )}
 
                 </div>
+              );
+            })}
 
-              ))}
+            {/* =================================================
+                AI TYPING INDICATOR
+            ================================================= */}
 
+            {isLoading && (
+              <div className="message-row assistant-row">
 
-              {/* Thinking indicator */}
+                <div className="message-avatar ai-message-avatar">
+                  AI
+                </div>
 
-              {sending && (
+                <div className="message-content assistant-content">
 
-                <div className="chat-message ai">
-
-                  <div className="message-avatar">
-
-                    AI
-
+                  <div className="message-sender">
+                    Interview Agent
                   </div>
 
+                  <div className="message-bubble assistant-bubble typing-bubble">
 
-                  <div className="message-content">
-
-                    <div className="message-name">
-
-                      Interview Agent
-
-                    </div>
-
-
-                    <div className="message-bubble">
-
-                      Thinking...
-
-                    </div>
+                    <span></span>
+                    <span></span>
+                    <span></span>
 
                   </div>
 
                 </div>
 
-              )}
+              </div>
+            )}
 
-            </div>
-
-          </div>
-
-
-          {/* =================================
-              ERROR
-          ================================== */}
-
-          {error && (
-
-            <div className="error-message">
-
-              {error}
-
-            </div>
-
-          )}
-
-
-          {/* =================================
-              RESUME UPLOAD
-          ================================== */}
-
-          {showResumeUpload && (
-
-            <div className="resume-upload-container">
-
-              <label className="resume-upload-button">
-
-                <span>
-                  📄
-                </span>
-
-                Upload Resume
-
-
-                <input
-                  type="file"
-                  accept=".pdf,application/pdf"
-                  hidden
-                  onChange={
-                    handleResumeChange
-                  }
-                />
-
-              </label>
-
-
-              {/* Selected resume */}
-
-              {resumeFile && (
-
-                <div className="selected-resume">
-
-                  <span className="resume-icon">
-
-                    📄
-
-                  </span>
-
-
-                  <span className="resume-name">
-
-                    {resumeFile.name}
-
-                  </span>
-
-                </div>
-
-              )}
-
-            </div>
-
-          )}
-
-
-          {/* =================================
-              COMPOSER
-          ================================== */}
-
-          <div className="composer-area">
-
-            <div className="composer">
-
-              <input
-                type="text"
-                value={message}
-                onChange={(e) =>
-                  setMessage(e.target.value)
-                }
-                onKeyDown={(e) => {
-
-                  if (
-                    e.key === "Enter"
-                  ) {
-
-                    e.preventDefault();
-
-                    handleSend();
-
-                  }
-
-                }}
-                placeholder="Type your answer here..."
-                disabled={sending}
-              />
-
-
-              <button
-                className="send-button"
-                onClick={handleSend}
-                disabled={
-                  !message.trim() ||
-                  sending
-                }
-                aria-label="Send message"
-              >
-
-                ↑
-
-              </button>
-
-            </div>
-
-
-            <p className="composer-hint">
-
-              Press Enter to send
-
-            </p>
+            <div ref={messagesEndRef}></div>
 
           </div>
 
         </section>
 
-      </div>
+        {/* =================================================
+            INPUT AREA
+        ================================================= */}
 
+        <footer className="input-section">
 
-      {/* =====================================
-          FOOTER
-      ====================================== */}
+          {/* Error */}
 
-      <footer className="footer">
+          {error && (
+            <div className="error-message">
+              {error}
+            </div>
+          )}
 
-        <span>
+          {/* Message Input */}
 
-          AI Interview Agent
+          <div className="input-wrapper">
 
-        </span>
+            <textarea
+              value={input}
+              onChange={(event) =>
+                setInput(event.target.value)
+              }
+              onKeyDown={handleKeyDown}
+              placeholder="Type your answer here..."
+              rows={1}
+              disabled={
+                isLoading ||
+                !selectedCandidate
+              }
+            />
 
+            <button
+              type="button"
+              className={`send-button ${
+                input.trim() && !isLoading
+                  ? "active"
+                  : ""
+              }`}
+              onClick={sendMessage}
+              disabled={
+                !input.trim() ||
+                isLoading ||
+                !selectedCandidate
+              }
+              aria-label="Send message"
+            >
+              ↑
+            </button>
 
-        <span>
+          </div>
 
-          Chat-based technical interview
+          {/* Input Footer */}
 
-        </span>
+          <div className="input-bottom">
 
+            <span className="input-context">
+              Answer based on your experience
+            </span>
 
-        <span>
+            <span className="enter-hint">
+              Press Enter to send
+            </span>
 
-          Session active
+          </div>
 
-        </span>
+        </footer>
 
-      </footer>
+      </main>
 
     </div>
   );
 }
-
 
 export default App;

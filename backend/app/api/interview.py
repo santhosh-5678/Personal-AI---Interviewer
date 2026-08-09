@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from fastapi import APIRouter
 
 from app.schemas.interview import (
@@ -12,116 +14,272 @@ from app.services.session_manager import (
 )
 
 from app.services.llm import generate_interview_response
+from app.services.evaluator import evaluate_answer
+from app.services.candidate_service import get_candidate
 
 
 router = APIRouter()
 
+def get_candidate_missions(candidate):
+    """
+    Extract completed missions from the candidate profile.
+    """
+
+    if candidate is None:
+        return []
+
+    candidate_data = (
+        candidate
+        if isinstance(candidate, dict)
+        else candidate.model_dump()
+    )
+
+    return candidate_data.get("missions", [])
+
+# =========================================================
+# SYSTEM PROMPT
+# =========================================================
 
 SYSTEM_PROMPT = """
 You are an AI Technical Interviewer conducting a structured
-technical interview.
+personalized technical interview.
 
-IMPORTANT CONTEXT RULES:
+The backend provides a candidate profile before the interview
+starts.
 
-1. The conversation history is the source of truth for information
-   explicitly provided by the candidate.
+The candidate profile may contain information such as:
 
-2. Never contradict information that the candidate has explicitly
-   provided during the current interview session.
+- name
+- role
+- years of experience
+- education
+- technical skills
+- projects
+- previous experience
+- areas of expertise
+- other relevant background
 
-3. If the candidate provides a name, use that name for the rest
-   of the interview.
+IMPORTANT CANDIDATE PROFILE RULES
+---------------------------------
 
-4. Do not tell the candidate that their name or information is
-   different from a candidate profile unless the interviewer
-   explicitly needs to resolve an identity issue.
+1. Treat the candidate profile provided by the backend as the
+   primary reference for constructing the interview.
 
-5. Never invent candidate information.
+2. Do NOT ask the candidate for information that is already clearly
+   available in the candidate profile.
 
-6. Candidate profile data provided by the backend is reference
-   information only. Do not assume that every field is confirmed
-   by the candidate.
+3. Do NOT ask the candidate to provide their name if their name is
+   already available in the candidate profile.
 
-7. If candidate information is missing, ask the candidate for it.
-   Do not guess.
+4. Do NOT ask the candidate to upload a resume.
 
-INTERVIEW FLOW:
+5. The candidate profile replaces the need for resume upload during
+   this interview.
 
-8. Start with a normal conversational introduction.
+6. Never invent information that is not present in the candidate
+   profile or conversation.
 
-9. Ask the candidate's name first.
+7. If some information is missing or ambiguous and that information
+   is important for the interview, you may ask the candidate for
+   clarification.
 
-10. After receiving the name, ask whether this is a good time
-    to conduct the interview.
+8. Candidate answers during the conversation should take priority
+   over assumptions made from the candidate profile.
 
-11. Collect candidate information one item at a time:
-    - qualification
-    - technical skills
-    - experience
-    - areas of expertise
-    - project background
+9. If the candidate corrects something from the profile, use the
+   candidate's correction for the rest of the interview.
 
-12. Ask exactly ONE question per response.
+10. Do not repeatedly ask for information that has already been
+    established.
 
-13. Never combine two questions into one response.
+INTERVIEW START
+---------------
 
-14. Do not start technical questions until the initial candidate
-    information has been collected.
+11. When the interview begins, greet the candidate using their name
+    from the candidate profile.
 
-15. Ask the candidate to upload their resume.
+12. Mention the role when useful.
 
-16. After resume processing, use the resume information to
-    personalize the technical interview.
+13. Do NOT ask for the candidate's name.
 
-TECHNICAL INTERVIEW:
+14. Do NOT ask whether the candidate wants to upload a resume.
 
-17. Ask exactly 8 technical questions.
+15. Do NOT start by asking generic onboarding questions.
 
-18. Questions must be based on the candidate's confirmed
-    skills, experience, projects and resume.
+16. Start naturally with a short personalized introduction.
 
-19. Remember previous answers.
+17. After the introduction, ask ONE appropriate background or
+    clarification question only if it is useful for understanding
+    the candidate's experience.
 
-20. Use previous answers when asking follow-up questions.
+18. If the candidate profile already contains sufficient background
+    information, move toward the technical interview without
+    unnecessary onboarding questions.
 
-21. If an answer is incorrect, remember the topic and continue
-    the interview. Do not immediately reveal the evaluation.
+QUESTION RULES
+--------------
 
-22. Do not ask questions about technologies that have no evidence
-    in the candidate's provided information unless clearly labeled
+19. Ask exactly ONE question per response.
+
+20. Never combine multiple questions into one response.
+
+21. Keep questions directly related to the candidate's profile.
+
+22. Do not ask about technologies that have no evidence in the
+    candidate profile unless the question is explicitly intended
     as a general assessment question.
 
-RESPONSE STYLE:
+23. Use the candidate's role, skills, experience and projects when
+    creating questions.
 
-23. Keep responses concise and conversational.
+TECHNICAL INTERVIEW
+-------------------
 
-24. Do not produce long explanations unless the candidate asks
-    for clarification.
+24. Conduct exactly 8 technical questions.
 
-25. Never generate multiple questions at once.
+25. Keep track of the technical question number internally.
 
-26. Never invent facts about the candidate.
+26. The technical questions should become progressively more
+    challenging when appropriate.
 
-27. If there is conflicting information, prefer the information
-    explicitly provided by the candidate during this session.
+27. Questions should be personalized to the candidate.
 
-28. If information is uncertain, ask the candidate instead of
-    guessing.
+28. Use the candidate's confirmed skills, experience and projects
+    as the main source for technical questions.
+
+29. Use previous answers to create relevant follow-up questions.
+
+30. Do not repeat the same question.
+
+31. Do not ask multiple technical questions in one response.
+
+32. After the eighth technical question has been answered, end the
+    technical interview.
+
+33. Do not ask a ninth technical question.
+
+34. After question 8, provide a concise closing message.
+
+ANSWER EVALUATION
+-----------------
+
+35. Evaluate answers internally.
+
+36. Do not reveal the complete evaluation after every question.
+
+37. If an answer is incorrect, continue the interview naturally.
+
+38. You may use the candidate's previous answer to create a useful
+    follow-up question.
+
+39. Do not unnecessarily tell the candidate whether every answer
+    is correct or incorrect.
+
+RESPONSE STYLE
+--------------
+
+40. Keep responses concise and conversational.
+
+41. Avoid long explanations unless the candidate asks for
+    clarification.
+
+42. Never generate multiple questions at once.
+
+43. Never invent candidate facts.
+
+44. Never ask unnecessary onboarding questions.
+
+45. Never ask for a resume upload.
+
+46. Maintain a professional interviewer tone.
+
+INTERVIEW OBJECTIVE
+-------------------
+
+The goal is to assess the candidate's technical ability based on
+the candidate information already provided by the backend.
+
+The interview should feel like a real personalized technical
+interview rather than a generic chatbot conversation.
 """
 
 
-def generate_ai_reply(conversation):
+# =========================================================
+# GET LAST QUESTION
+# =========================================================
+
+def get_last_question(conversation):
+
+    for message in reversed(conversation):
+
+        if message["role"] == "assistant":
+            return message["content"]
+
+    return ""
+
+def generate_ai_reply(
+    conversation,
+    question_number=None,
+    candidate_missions=None,
+):
+
+    question_context = ""
+
+    if question_number is not None:
+
+        question_context = f"""
+
+CURRENT INTERVIEW STATE
+-----------------------
+
+You are currently conducting technical question
+{question_number} of 8.
+
+IMPORTANT:
+
+- Ask exactly ONE technical question.
+- Do not skip this question number.
+- Do not ask a previous question again.
+- Do not ask question 9.
+
+CANDIDATE'S COMPLETED MISSIONS
+------------------------------
+
+{json.dumps(candidate_missions or [], indent=2)}
+
+QUESTION SELECTION RULES
+------------------------
+
+- Generate the question ONLY from the candidate's completed
+  missions, skills, expertise, or explicitly provided technical
+  information.
+- Prefer topics from the candidate's completed missions.
+- Do not introduce unrelated technologies or concepts.
+- Do not randomly choose a machine learning topic.
+- If the candidate has completed a mission about Embeddings,
+  questions may focus on embeddings.
+- If the candidate has completed a mission about Vector Databases,
+  questions may focus on vector databases.
+- If the candidate has completed a mission about RAG,
+  questions may focus on RAG.
+- Use the candidate's previous answers to increase difficulty
+  or ask a relevant follow-up.
+- Do not repeat a previously asked question.
+"""
 
     return generate_interview_response(
         [
             {
                 "role": "system",
-                "content": SYSTEM_PROMPT,
+                "content": SYSTEM_PROMPT + question_context,
             },
             *conversation,
         ]
     )
 
+# =========================================================
+# INTERVIEW ENDPOINT
+# =========================================================
 
 @router.post(
     "/interview",
@@ -133,61 +291,92 @@ async def interview(
 
     session_id = request.sessionId
 
-    # ==========================================
-    # GET OR CREATE SESSION
-    # ==========================================
+    print("SESSION ID:", request.sessionId)
+    print("MESSAGE:", request.message)
+    print("CANDIDATE ID:", request.candidateId)
 
     session = get_session(session_id)
 
+
+    # =====================================================
+    # CREATE NEW SESSION
+    # =====================================================
+
     if session is None:
+        candidate = get_candidate(request.candidateId)
+
+        if candidate is None:
+
+            return {
+                "reply": (
+                    "Candidate not found. Please provide a valid "
+                    "candidateId."
+                ),
+                "done": True,
+            }
 
         session = create_session(session_id)
 
-
-    # ==========================================
-    # FIRST REQUEST
-    # ==========================================
-
-    if request.candidate is not None:
-
-        # Store candidate information
         session.stage = "GREETING"
-
         session.conversation = []
 
+        session.candidateDetails = candidate["member"]
 
-        # Add candidate information to context
+        candidate_missions = get_candidate_missions(
+            candidate
+        )
+
+        session.missions = candidate_missions
+
+        # -------------------------------------------------
+        # STORE CANDIDATE PROFILE
+        # -------------------------------------------------
+
         session.conversation.append(
             {
                 "role": "user",
                 "content": (
                     "Candidate profile:\n"
-                    + request.candidate.model_dump_json(
-                        indent=2
-                    )
+                    + json.dumps(candidate, indent=2)
                 ),
             }
         )
 
+        # -------------------------------------------------
+        # START INTERVIEW
+        # -------------------------------------------------
 
-        # Ask the AI to begin naturally
         session.conversation.append(
-            {
-                "role": "user",
-                "content": (
-                    "Start the onboarding conversation. "
-                    "Do not ask a technical question yet. "
-                    "Begin with a simple greeting and ask "
-                    "the candidate their name."
-                ),
-            }
-        )
+        {
+            "role": "user",
+            "content": (
+                "Start the technical interview using the "
+                "candidate profile. Greet the candidate briefly "
+                "by name and mention their role when appropriate. "
+                "After the greeting, immediately ask Technical "
+                "Question 1. "
+                "Do not ask a background question. "
+                "Do not ask for information already available "
+                "in the candidate profile. "
+                "The first question must be a technical question "
+                "based on the candidate's skills, experience, "
+                "missions, or expertise."
+            ),
+        }
+    )
 
+        # -------------------------------------------------
+        # FIRST TECHNICAL QUESTION
+        # -------------------------------------------------
+
+        session.currentQuestion = 1
+        session.stage = "TECHNICAL"
 
         ai_reply = generate_ai_reply(
-            session.conversation
+            session.conversation,
+            session.currentQuestion,
+            candidate_missions,
         )
-
 
         session.conversation.append(
             {
@@ -196,9 +385,7 @@ async def interview(
             }
         )
 
-
         save_session(session)
-
 
         return {
             "reply": ai_reply,
@@ -206,24 +393,99 @@ async def interview(
         }
 
 
-    # ==========================================
-    # CONTINUE CONVERSATION
-    # ==========================================
+    # =====================================================
+    # CHECK COMPLETED SESSION
+    # =====================================================
 
-    if request.message is not None:
+    if session.completed:
+
+        return {
+            "reply": "The interview has already been completed.",
+            "done": True,
+        }
+
+    if request.message:
+
+        question = get_last_question(
+            session.conversation
+        )
+
+        if not question:
+            return {
+                "reply": "Unable to determine the current interview question.",
+                "done": True,
+            }
+
+        answer = request.message
+
+        # -------------------------------------------------
+        # STORE CANDIDATE ANSWER
+        # -------------------------------------------------
 
         session.conversation.append(
             {
                 "role": "user",
-                "content": request.message,
+                "content": answer,
             }
         )
 
+        # -------------------------------------------------
+        # EVALUATE ANSWER
+        # -------------------------------------------------
 
-        ai_reply = generate_ai_reply(
-            session.conversation
+        evaluation = evaluate_answer(
+            question,
+            answer,
         )
 
+        # -------------------------------------------------
+        # STORE EVALUATION
+        # -------------------------------------------------
+
+        session.evaluations.append(
+            {
+                "questionNumber": session.currentQuestion,
+                "question": question,
+                "answer": answer,
+                "evaluation": evaluation,
+            }
+        )
+
+        # -------------------------------------------------
+        # CHECK IF Q8 WAS ANSWERED
+        # -------------------------------------------------
+
+        if session.currentQuestion >= session.totalQuestions:
+
+            session.completed = True
+            session.stage = "COMPLETED"
+
+            save_session(session)
+
+            return {
+                "reply": (
+                    "Thank you. That completes the "
+                    "technical interview. We appreciate your "
+                    "time and thoughtful responses."
+                ),
+                "done": True,
+            }
+
+        # -------------------------------------------------
+        # MOVE TO NEXT QUESTION
+        # -------------------------------------------------
+
+        session.currentQuestion += 1
+
+        # -------------------------------------------------
+        # GENERATE NEXT QUESTION
+        # -------------------------------------------------
+
+        ai_reply = generate_ai_reply(
+            session.conversation,
+            session.currentQuestion,
+            session.missions,
+        )
 
         session.conversation.append(
             {
@@ -232,9 +494,7 @@ async def interview(
             }
         )
 
-
         save_session(session)
-
 
         return {
             "reply": ai_reply,
@@ -242,11 +502,41 @@ async def interview(
         }
 
 
-    # ==========================================
+    # =====================================================
     # INVALID REQUEST
-    # ==========================================
+    # =====================================================
 
     return {
         "reply": "Invalid interview request.",
         "done": True,
+    }
+
+
+# =========================================================
+# GET INTERVIEW SESSION
+# =========================================================
+
+@router.get(
+    "/interview/{session_id}"
+)
+async def get_interview_session(
+    session_id: str,
+):
+
+    session = get_session(session_id)
+
+    if session is None:
+
+        return {
+            "error": "Session not found"
+        }
+
+    return {
+        "sessionId": session.sessionId,
+        "stage": session.stage,
+        "currentQuestion": session.currentQuestion,
+        "totalQuestions": session.totalQuestions,
+        "completed": session.completed,
+        "conversation": session.conversation,
+        "evaluations": session.evaluations,
     }

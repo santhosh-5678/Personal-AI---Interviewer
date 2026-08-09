@@ -1,42 +1,47 @@
 import os
 
-from groq import Groq
 from dotenv import load_dotenv
-
+from openai import OpenAI
 
 load_dotenv()
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-
-if not GROQ_API_KEY:
+if not GEMINI_API_KEY:
     raise ValueError(
-        "GROQ_API_KEY is not configured in .env"
+        "GEMINI_API_KEY is not configured in .env"
     )
 
-
-client = Groq(
-    api_key=GROQ_API_KEY
+client = OpenAI(
+    api_key=GEMINI_API_KEY,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
 )
 
+MODEL_NAME = "gemini-2.5-flash"
 
-MODEL_NAME = "llama-3.3-70b-versatile"
 
+def generate_interview_response(conversation):
 
-def generate_interview_response(
-    conversation
-):
+    try:
+        print("Calling Gemini...")
+        print("Model:", MODEL_NAME)
+        print("Number of messages:", len(conversation))
 
-    response = client.chat.completions.create(
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=conversation,
+            temperature=0.3,
+            max_tokens=500,
+        )
 
-        model=MODEL_NAME,
+        print("Gemini response received")
 
-        messages=conversation,
+        return response.choices[0].message.content
 
-        temperature=0.7,
+    except Exception as e:
+        print("====================================")
+        print("GEMINI LLM ERROR:")
+        print(repr(e))
+        print("====================================")
 
-        max_tokens=500,
-    )
-
-    return response.choices[0].message.content
+        return "LLM_ERROR"
